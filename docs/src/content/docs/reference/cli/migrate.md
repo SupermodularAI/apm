@@ -8,7 +8,9 @@ sidebar:
 ## Synopsis
 
 ```bash
-apm migrate init [PATH] [--ceiling CEILING]... [--agent AGENT] [--out DIR] [--rules FILE] [--dry-run] [-y] [-v]
+apm migrate init [PATH] [--ceiling CEILING]... [--agent RUNTIME] [--max-repairs N]
+                        [--out DIR] [--rules FILE] [--classification FILE]
+                        [--require-rules|--allow-unscrubbed] [--skip-missing] [--dry-run] [-y] [-v]
 apm migrate check [PATH] [--manifest FILE]
 
 # Example
@@ -45,7 +47,10 @@ apm migrate init ./repo --ceiling public  # one audience only
 |---|---|
 | `PATH` | Optional positional; the repository to migrate. Defaults to the current directory. |
 | `--ceiling` | Audience ceiling to emit; repeatable. One of `public`, `company`, `personal`. Defaults to all three. |
-| `--agent` | Agent runtime used to classify. One of `claude`, `codex`, `copilot`, `opencode`. Default: `claude`. |
+| `--agent` | APM runtime used to classify. Resolved from APM's runtime registry (today: `copilot`, `codex`, `llm`). |
+| `--max-repairs` | How many times to re-prompt with the specific defects before giving up. Default `2`, range 0–5. |
+| `--classification` | Consume a classification response from a file instead of dispatching. Reproducible and costs no tokens. |
+| `--skip-missing` | Stage without primitives that are classified but absent from the working tree, instead of failing. |
 | `--out` | Staging directory for the copied tree and manifests. Default: `./.apm-migrate`. |
 | `--rules` | Identifier/PII rules applied while staging. Never bundled with APM -- always supplied by you. |
 | `--dry-run` | Print the classification prompt and exit without writing anything. |
@@ -64,6 +69,14 @@ apm migrate check ./repo
 |---|---|
 | `PATH` | Optional positional; the repository to validate. Defaults to the current directory. |
 | `--manifest` | Manifest to validate. Default: discovered under `./.apm-migrate`. |
+
+## Classification
+
+`apm migrate init` asks a runtime from APM's own registry to classify each primitive, then **validates the answer against the primitives that actually exist**. A response that omits a primitive, invents one, uses an unknown audience, or declares a domain without a description is rejected and re-prompted with those specific defects quoted back (`--max-repairs`, default 2).
+
+The result is written to `<out>/classification.json` **as a proposal, not an authority**. Classification carries confidentiality and PII consequences, so review it before relying on the staged output. Re-run with `--classification <out>/classification.json` to reproduce a staging run exactly, without dispatching again.
+
+Candidate identifiers the runtime reports are printed for review and are **never applied automatically** — add the ones you confirm to a `--rules` file.
 
 ## How primitives are discovered
 

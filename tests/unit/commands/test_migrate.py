@@ -341,6 +341,49 @@ class TestMigrateEndToEnd:
         assert result.exit_code == 1
         assert "rules" in result.output.lower()
 
+    def test_dispatch_writes_the_classification_proposal(self, runner, tmp_path) -> None:
+        """A dispatched classification is written out for human review.
+
+        It carries confidentiality and PII consequences, so it must be
+        inspectable and re-usable via --classification, not only held in memory.
+        """
+        from unittest.mock import patch
+
+        repo = tmp_path / "repo"
+        _write_skill(repo, "alpha")
+        out = tmp_path / "staged"
+
+        class _Fake:
+            def execute_prompt(self, prompt_content: str, **kwargs) -> str:
+                return TestMigrateEndToEnd._classification("alpha")
+
+        with patch("apm_cli.migrate.dispatch.resolve_runtime", return_value=_Fake()):
+            result = runner.invoke(
+                cli,
+                [
+                    "migrate",
+                    "init",
+                    str(repo),
+                    "--out",
+                    str(out),
+                    "--ceiling",
+                    "public",
+                    "--allow-unscrubbed",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert (out / "classification.json").is_file()
+        assert (out / "public" / "apm.yml").is_file()
+
+    def test_unknown_runtime_fails_with_the_known_list(self, runner, tmp_path) -> None:
+        repo = tmp_path / "repo"
+        _write_skill(repo, "alpha")
+        result = runner.invoke(cli, ["migrate", "init", str(repo), "--agent", "claude"])
+        # Click rejects it at parse time -- "claude" is not an APM runtime.
+        assert result.exit_code != 0
+        assert "claude" in result.output
+
     def test_rules_are_applied_to_staged_output(self, runner, tmp_path) -> None:
         import json as _json
 

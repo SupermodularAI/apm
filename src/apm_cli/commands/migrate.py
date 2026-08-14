@@ -20,6 +20,7 @@ belong in a given package, so this command produces that decision as an
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import click
@@ -28,8 +29,21 @@ import click
 #: given ceiling contains everything at or below it.
 CEILINGS = ("public", "company", "personal")
 
-#: Agent runtimes the classification pass can be dispatched to.
-AGENTS = ("claude", "codex", "copilot", "opencode")
+
+#: Runtimes the classification pass can be dispatched to.  Resolved from APM's
+#: own registry rather than hardcoded, so a runtime added upstream works here
+#: with no change.  (Note: "claude" is NOT an APM runtime -- use
+#: --classification to consume a response produced elsewhere.)
+def _agent_choices() -> tuple[str, ...]:
+    try:
+        from ..runtime.registry import adapter_descriptors
+
+        return tuple(d.name for d in adapter_descriptors())
+    except Exception:  # pragma: no cover - registry import is not optional in practice
+        return ("copilot", "codex", "llm")
+
+
+AGENTS = _agent_choices()
 
 #: Directory names that make APM's target auto-detection fire.  Staging into
 #: one of these corrupts the very repo the output is generated for -- verified:
@@ -80,9 +94,16 @@ def migrate(ctx: click.Context) -> None:
 @click.option(
     "--agent",
     type=click.Choice(AGENTS),
-    default="claude",
+    default=AGENTS[0] if AGENTS else None,
     show_default=True,
-    help="Agent runtime used to classify the primitives.",
+    help="APM runtime used to classify the primitives.",
+)
+@click.option(
+    "--max-repairs",
+    type=click.IntRange(0, 5),
+    default=2,
+    show_default=True,
+    help="How many times to re-prompt with the defects before giving up.",
 )
 @click.option(
     "--out",
@@ -145,6 +166,7 @@ def init(
     out_dir: str | None,
     rules_file: str | None,
     classification_file: str | None,
+    max_repairs: int,
     require_rules: bool,
     skip_missing: bool,
     dry_run: bool,
@@ -219,17 +241,6 @@ def init(
     from ..migrate.scrub import RulesError, load_rules
     from ..migrate.stage import StagingError, emit_manifest, stage_ceiling
 
-    if classification_file is None:
-        # Dispatching to a live agent is not wired yet.  Everything downstream
-        # of the response is, so --classification accepts one from disk.
-        _rich_error(
-            "No classification source. Dispatch to an agent runtime is not wired yet; "
-            "pass --classification FILE with a response, or --dry-run to review the "
-            "prompt that will be dispatched.",
-            symbol="error",
-        )
-        raise SystemExit(1)
-
     rules = None
     if rules_file is not None:
         try:
@@ -238,18 +249,94 @@ def init(
             _rich_error(str(exc), symbol="error")
             raise SystemExit(1) from exc
 
-    try:
-        classification = parse_classification(
-            Path(classification_file).read_text(encoding="utf-8"),
-            primitives=result.primitives,
-            ceilings=CEILINGS,
+    if classification_file is not None:
+        # A response captured earlier (or produced by hand). Skips dispatch
+        # entirely, which keeps a re-run reproducible and costs no tokens.
+        try:
+            classification = parse_classification(
+                Path(classification_file).read_text(encoding="utf-8"),
+                primitives=result.primitives,
+                ceilings=CEILINGS,
+            )
+        except ClassificationError as exc:
+            _rich_error(str(exc), symbol="error")
+            raise SystemExit(1) from exc
+        except OSError as exc:
+            _rich_error(f"cannot read {classification_file}: {exc}", symbol="error")
+            raise SystemExit(1) from exc
+    else:
+        from ..migrate.dispatch import DispatchError, classify_with_runtime, resolve_runtime
+
+        def _announce(attempt: int, budget: int) -> None:
+            if attempt == 0:
+                _rich_info(
+                    f"Classifying {len(result.primitives)} primitive(s) via '{agent}'...",
+                    symbol="info",
+                )
+            else:
+                _rich_info(
+                    f"Response rejected; re-prompting with the defects ({attempt}/{budget}).",
+                    symbol="warning",
+                )
+
+        try:
+            runtime = resolve_runtime(agent)
+            classification = classify_with_runtime(
+                runtime,
+                primitives=result.primitives,
+                ceilings=CEILINGS,
+                project_root=project_root,
+                max_repairs=max_repairs,
+                on_attempt=_announce,
+            )
+        except DispatchError as exc:
+            _rich_error(str(exc), symbol="error")
+            raise SystemExit(1) from exc
+        except ClassificationError as exc:
+            _rich_error(
+                f"{exc}\n\nThe runtime could not produce a usable classification after "
+                f"{max_repairs} repair attempt(s). Review the prompt with --dry-run, or "
+                "supply a response with --classification.",
+                symbol="error",
+            )
+            raise SystemExit(1) from exc
+
+        # Classification carries confidentiality and PII consequences, so the
+        # proposal is written out for review rather than only held in memory.
+        proposal = staging_root / "classification.json"
+        staging_root.mkdir(parents=True, exist_ok=True)
+        proposal.write_text(
+            json.dumps(
+                {
+                    "domains": {
+                        n: {"description": d.description} for n, d in classification.domains.items()
+                    },
+                    "primitives": {
+                        n: {
+                            "domain": p.domain,
+                            "audience": p.audience,
+                            "confidential": p.confidential,
+                            "identifiers": list(p.identifiers),
+                        }
+                        for n, p in classification.primitives.items()
+                    },
+                },
+                indent=1,
+            ),
+            encoding="utf-8",
         )
-    except ClassificationError as exc:
-        _rich_error(str(exc), symbol="error")
-        raise SystemExit(1) from exc
-    except OSError as exc:
-        _rich_error(f"cannot read {classification_file}: {exc}", symbol="error")
-        raise SystemExit(1) from exc
+        _rich_info(f"Wrote the classification proposal to {proposal}.", symbol="info")
+
+        proposed_ids = sorted(
+            {i for p in classification.primitives.values() for i in p.identifiers}
+        )
+        if proposed_ids:
+            _rich_info(
+                f"{len(proposed_ids)} candidate identifier(s) proposed for review — "
+                "these are NOT applied automatically. Add the ones you confirm to a "
+                "--rules file: " + ", ".join(proposed_ids[:8]),
+                symbol="warning",
+            )
 
     project_name = project_root.name or "migrated-project"
     for ceiling in selected:
