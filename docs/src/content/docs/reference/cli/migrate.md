@@ -51,6 +51,7 @@ apm migrate init ./repo --ceiling public  # one audience only
 | `--max-repairs` | How many times to re-prompt with the specific defects before giving up. Default `2`, range 0–5. |
 | `--classification` | Consume a classification response from a file instead of dispatching. Reproducible and costs no tokens. |
 | `--skip-missing` | Stage without primitives that are classified but absent from the working tree, instead of failing. |
+| `--restricted-hook` | Hook script that must not ship below the top ceiling; repeatable. Use for scripts holding a credential. |
 | `--out` | Staging directory for the copied tree and manifests. Default: `./.apm-migrate`. |
 | `--rules` | Identifier/PII rules applied while staging. Never bundled with APM -- always supplied by you. |
 | `--dry-run` | Print the classification prompt and exit without writing anything. |
@@ -77,6 +78,16 @@ apm migrate check ./repo
 The result is written to `<out>/classification.json` **as a proposal, not an authority**. Classification carries confidentiality and PII consequences, so review it before relying on the staged output. Re-run with `--classification <out>/classification.json` to reproduce a staging run exactly, without dispatching again.
 
 Candidate identifiers the runtime reports are printed for review and are **never applied automatically** — add the ones you confirm to a `--rules` file.
+
+## Hooks
+
+Hooks are staged alongside skills and agents: `.claude/hooks/<file>` packs to `hooks/<file>` with its executable bit intact, and `.claude/hooks.json` packs to `hooks.json`. A hook script that loses `+x` is delivered but never fires, so the bit is preserved deliberately.
+
+:::caution
+A hook script frequently holds a **credential** for the service it talks to, and scrubbing cannot help — a token is not a known literal in any rules file. Mark such scripts with `--restricted-hook <name>` and they are withheld from every ceiling below the top one.
+
+A descriptor that wires a withheld script is withheld too: shipping the wiring without its target leaves a hook command pointing at a file that was never staged.
+:::
 
 ## How primitives are discovered
 

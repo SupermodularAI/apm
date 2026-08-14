@@ -173,13 +173,14 @@ def emit_manifest(
     name: str,
     version: str,
     description: str | None = None,
+    extra_includes: tuple[str, ...] = (),
 ) -> Path:
     """Write ``out_dir/apm.yml`` listing *staged* under ``includes:``.
 
     Emitted by explicit string building so the bytes are stable across runs and
     diffable against a golden fixture.
     """
-    if not staged:
+    if not staged and not extra_includes:
         raise StagingError("refusing to emit a manifest with no includes: it would pack nothing")
 
     lines = [
@@ -189,7 +190,7 @@ def emit_manifest(
     if description:
         lines.append(f"description: {_yaml_quote(description)}")
     lines.append("includes:")
-    for rel in sorted({s.rel_path for s in staged}):
+    for rel in sorted({s.rel_path for s in staged} | set(extra_includes)):
         lines.append(f"  - {_yaml_quote(rel)}")
 
     path = out_dir / "apm.yml"

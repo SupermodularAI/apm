@@ -137,6 +137,15 @@ def migrate(ctx: click.Context) -> None:
     ),
 )
 @click.option(
+    "--restricted-hook",
+    "restricted_hooks",
+    multiple=True,
+    help=(
+        "Hook script that must not ship below the top ceiling (repeatable). "
+        "Use for scripts holding a credential -- scrubbing cannot redact a token."
+    ),
+)
+@click.option(
     "--skip-missing",
     is_flag=True,
     default=False,
@@ -167,6 +176,7 @@ def init(
     rules_file: str | None,
     classification_file: str | None,
     max_repairs: int,
+    restricted_hooks: tuple[str, ...],
     require_rules: bool,
     skip_missing: bool,
     dry_run: bool,
@@ -238,6 +248,7 @@ def init(
         return
 
     from ..migrate.classification import ClassificationError, parse_classification
+    from ..migrate.hooks import HookStagingError, stage_hooks
     from ..migrate.scrub import RulesError, load_rules
     from ..migrate.stage import StagingError, emit_manifest, stage_ceiling
 
@@ -352,7 +363,14 @@ def init(
                 require_rules=require_rules,
                 skip_missing=skip_missing,
             )
-            if not staged:
+            staged_hooks = stage_hooks(
+                project_root,
+                ceiling_dir,
+                restricted=restricted_hooks,
+                ceiling=ceiling,
+                ceilings=CEILINGS,
+            )
+            if not staged and not staged_hooks:
                 _rich_info(
                     f"ceiling '{ceiling}': nothing at or below this audience -- skipped.",
                     symbol="warning",
@@ -361,15 +379,17 @@ def init(
             emit_manifest(
                 ceiling_dir,
                 staged=staged,
+                extra_includes=tuple(h.rel_path for h in staged_hooks),
                 name=f"{project_name}-{ceiling}",
                 version="0.1.0",
             )
-        except StagingError as exc:
+        except (StagingError, HookStagingError) as exc:
             _rich_error(str(exc), symbol="error")
             raise SystemExit(1) from exc
 
+        hook_note = f" + {len(staged_hooks)} hook file(s)" if staged_hooks else ""
         _rich_echo(
-            f"  {ceiling}: staged {len(staged)} primitive(s) -> {ceiling_dir}",
+            f"  {ceiling}: staged {len(staged)} primitive(s){hook_note} -> {ceiling_dir}",
             symbol="list",
         )
 
