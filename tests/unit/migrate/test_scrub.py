@@ -71,7 +71,7 @@ class TestLoadRules:
             json.dumps(
                 {
                     "redact": ["a@b.c"],
-                    "parametrize": {"U1": "<T>"},
+                    "parametrize": {"U0BA46PD": "<T>"},
                     "redaction_token": "<GONE>",
                 }
             ),
@@ -79,7 +79,7 @@ class TestLoadRules:
         )
         rules = load_rules(path)
         assert rules.redact == ("a@b.c",)
-        assert rules.parametrize == {"U1": "<T>"}
+        assert rules.parametrize == {"U0BA46PD": "<T>"}
         assert rules.redaction_token == "<GONE>"
 
     def test_absent_sections_default_to_empty(self, tmp_path) -> None:
@@ -104,9 +104,40 @@ class TestLoadRules:
 
     def test_rejects_a_non_string_token(self, tmp_path) -> None:
         path = tmp_path / "rules.json"
-        path.write_text(json.dumps({"parametrize": {"U1": 5}}), encoding="utf-8")
+        path.write_text(json.dumps({"parametrize": {"U0BA46PD": 5}}), encoding="utf-8")
         with pytest.raises(RulesError):
             load_rules(path)
+
+    @pytest.mark.parametrize("literal", ["i", "ab", "xyz"])
+    def test_rejects_a_dangerously_short_literal(self, tmp_path, literal) -> None:
+        """A short literal matches inside ordinary words and shreds every file.
+
+        Observed for real: a generator bug emitted the single character "i" as a
+        rule, which rewrote every 'i' in every staged file to a placeholder. The
+        output still looked plausible in aggregate -- tens of thousands of
+        "substitutions" -- so this must fail at load time, not review time.
+        """
+        path = tmp_path / "rules.json"
+        path.write_text(json.dumps({"parametrize": {literal: "<TOKEN>"}}), encoding="utf-8")
+        with pytest.raises(RulesError) as exc:
+            load_rules(path)
+        assert "short" in str(exc.value).lower()
+
+    def test_rejects_a_short_redact_literal(self, tmp_path) -> None:
+        path = tmp_path / "rules.json"
+        path.write_text(json.dumps({"redact": ["ab"]}), encoding="utf-8")
+        with pytest.raises(RulesError):
+            load_rules(path)
+
+    def test_accepts_a_short_literal_when_explicitly_allowed(self, tmp_path) -> None:
+        """An escape hatch, because some real identifiers are genuinely short."""
+        path = tmp_path / "rules.json"
+        path.write_text(
+            json.dumps({"parametrize": {"ab": "<TOKEN>"}, "allow_short_literals": True}),
+            encoding="utf-8",
+        )
+        rules = load_rules(path)
+        assert rules.parametrize == {"ab": "<TOKEN>"}
 
 
 class TestScrubTree:

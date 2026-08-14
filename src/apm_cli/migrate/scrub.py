@@ -59,6 +59,12 @@ TEXT_EXTENSIONS = frozenset(
 # sensitive values. It is the opposite of a secret.
 DEFAULT_REDACTION_TOKEN = "<REDACTED>"  # noqa: S105
 
+#: Shortest literal accepted without an explicit opt-in.  A rule shorter than
+#: this matches inside ordinary words: a generator bug once emitted the single
+#: character "i", which rewrote every 'i' in every staged file to a placeholder
+#: while still *looking* like tens of thousands of successful substitutions.
+MIN_LITERAL_LENGTH = 4
+
 
 class RulesError(Exception):
     """Raised when a rules file cannot be loaded or is unsafe to apply."""
@@ -93,8 +99,13 @@ def load_rules(path: Path) -> ScrubRules:
         {
           "redact": ["someone@example.com"],
           "parametrize": {"U0123": "<SLACK_USER_ID>"},
-          "redaction_token": "<REDACTED>"
+          "redaction_token": "<REDACTED>",
+          "allow_short_literals": false
         }
+
+    Literals shorter than :data:`MIN_LITERAL_LENGTH` are rejected unless
+    ``allow_short_literals`` is set: they match inside ordinary words and
+    corrupt every file they touch.
     """
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -103,6 +114,17 @@ def load_rules(path: Path) -> ScrubRules:
 
     if not isinstance(payload, dict):
         raise RulesError(f"{path}: expected a JSON object at the top level")
+
+    allow_short = bool(payload.get("allow_short_literals", False))
+
+    def _check_length(literal: str, where: str) -> None:
+        if not allow_short and len(literal) < MIN_LITERAL_LENGTH:
+            raise RulesError(
+                f"{path}: {where} literal {literal!r} is dangerously short "
+                f"(< {MIN_LITERAL_LENGTH} chars). It would match inside ordinary words "
+                "and corrupt every file it touches. Set 'allow_short_literals': true "
+                "only if you are certain."
+            )
 
     redact_raw = payload.get("redact", [])
     if not isinstance(redact_raw, list):
@@ -114,6 +136,7 @@ def load_rules(path: Path) -> ScrubRules:
         if not item:
             # An empty literal matches at every position and would shred the file.
             raise RulesError(f"{path}: 'redact' contains an empty literal")
+        _check_length(item, "'redact'")
         redact.append(item)
 
     param_raw = payload.get("parametrize", {})
@@ -125,6 +148,7 @@ def load_rules(path: Path) -> ScrubRules:
             raise RulesError(f"{path}: 'parametrize' keys must be non-empty strings")
         if not isinstance(value, str) or not value:
             raise RulesError(f"{path}: 'parametrize[{key}]' must be a non-empty string token")
+        _check_length(key, "'parametrize'")
         parametrize[key] = value
 
     token = payload.get("redaction_token", DEFAULT_REDACTION_TOKEN)

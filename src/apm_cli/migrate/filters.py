@@ -26,6 +26,11 @@ JUNK_SUFFIXES = (".bak", ".orig", ".rej", ".swp", ".swo")
 
 RUNTIME_DIR_NAMES = frozenset({"logs", "state"})
 
+#: Directory whose ``*.json`` files are live scheduler config -- real schedules,
+#: repositories and recipients -- rather than source.  The ``.json.example``
+#: template beside them IS source and is kept.
+LIVE_CONFIG_DIR = "crons"
+
 
 def is_junk(path: Path) -> bool:
     """True when *path* is editor/OS debris or a stale backup copy."""
@@ -35,6 +40,13 @@ def is_junk(path: Path) -> bool:
     if name.endswith("~"):
         return True
     return name.endswith(JUNK_SUFFIXES)
+
+
+def is_live_config(path: Path) -> bool:
+    """True for a live ``crons/*.json`` (but not its ``.json.example``)."""
+    if path.parent.name != LIVE_CONFIG_DIR:
+        return False
+    return path.name.endswith(".json") and not path.name.endswith(".json.example")
 
 
 def is_tracked_runtime_placeholder(path: Path) -> bool:
@@ -73,7 +85,9 @@ def is_runtime_artifact(path: Path, *, relative_to: Path | None = None) -> bool:
 
 def should_exclude(path: Path, *, relative_to: Path | None = None) -> bool:
     """True when *path* must not be staged."""
-    return is_junk(path) or is_runtime_artifact(path, relative_to=relative_to)
+    return (
+        is_junk(path) or is_live_config(path) or is_runtime_artifact(path, relative_to=relative_to)
+    )
 
 
 def copytree_ignore(src: str, names: list[str]) -> set[str]:
@@ -87,7 +101,7 @@ def copytree_ignore(src: str, names: list[str]) -> set[str]:
     ignored: set[str] = set()
     for name in names:
         candidate = src_path / name
-        if is_junk(candidate):
+        if is_junk(candidate) or is_live_config(candidate):
             ignored.add(name)
             continue
         if candidate.is_dir() and name in RUNTIME_DIR_NAMES:

@@ -284,6 +284,25 @@ class TestRuntimeArtifactExclusion:
         stage_ceiling(repo, out, classification=classification, ceiling="public", rules=None)
         assert not (out / ".apm" / "skills" / "pub" / "debug.log").exists()
 
+    def test_excludes_live_crons_json(self, repo, classification, tmp_path):
+        """A crons/*.json is live scheduler config, not shippable source.
+
+        It names real schedules, repos and recipients. The `.json.example`
+        template beside it IS source and must survive.
+        """
+        crons = repo / ".apm" / "skills" / "pub" / "crons"
+        crons.mkdir()
+        (crons / "nightly.json").write_text('{"schedule":"0 2 * * *"}', encoding="utf-8")
+        (crons / "nightly.json.example").write_text("{}", encoding="utf-8")
+        (crons / "README.md").write_text("docs", encoding="utf-8")
+
+        out = tmp_path / "out" / "public"
+        stage_ceiling(repo, out, classification=classification, ceiling="public", rules=None)
+        staged = out / ".apm" / "skills" / "pub" / "crons"
+        assert not (staged / "nightly.json").exists()
+        assert (staged / "nightly.json.example").is_file()
+        assert (staged / "README.md").is_file()
+
     def test_excludes_junk_files(self, repo, classification, tmp_path):
         (repo / ".apm" / "skills" / "pub" / ".DS_Store").write_bytes(b"junk")
         (repo / ".apm" / "skills" / "pub" / "SKILL.md.bak").write_text("old", encoding="utf-8")
