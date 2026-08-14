@@ -140,6 +140,157 @@ class TestLoadRules:
         assert rules.parametrize == {"ab": "<TOKEN>"}
 
 
+class TestPerPrimitiveRules:
+    """Rules scoped to one primitive, overriding the global set.
+
+    Real case that motivated this: one address is *redacted* in one skill and
+    *parametrized* to a meaningful token in two others. A flat rule set cannot
+    express one literal having two treatments, so the more aggressive rule wins
+    everywhere and the token is lost.
+    """
+
+    def test_loads_a_primitives_block(self, tmp_path) -> None:
+        path = tmp_path / "rules.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "redact": ["shared@example.com"],
+                    "primitives": {"invoice": {"parametrize": {"shared@example.com": "<FINANCE>"}}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        rules = load_rules(path)
+        assert rules.redact == ("shared@example.com",)
+        assert "invoice" in rules.primitives
+
+    def test_scoped_rule_overrides_the_global_one(self, tmp_path) -> None:
+        """Scoped beats global -- otherwise the specific intent is unreachable."""
+        path = tmp_path / "rules.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "redact": ["shared@example.com"],
+                    "primitives": {"invoice": {"parametrize": {"shared@example.com": "<FINANCE>"}}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        rules = load_rules(path)
+
+        # Unscoped primitive: the global redact applies.
+        assert scrub_text("mail shared@example.com", rules.for_primitive("other")) == (
+            "mail <REDACTED>"
+        )
+        # Scoped primitive: the parametrize token wins.
+        assert scrub_text("mail shared@example.com", rules.for_primitive("invoice")) == (
+            "mail <FINANCE>"
+        )
+
+    def test_scoped_rules_are_additive_to_the_global_set(self, tmp_path) -> None:
+        """A scope adds its rules; it does not discard the global ones."""
+        path = tmp_path / "rules.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "redact": ["global@example.com"],
+                    "primitives": {"invoice": {"redact": ["local@example.com"]}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        scoped = load_rules(path).for_primitive("invoice")
+        assert scrub_text("global@example.com", scoped) == "<REDACTED>"
+        assert scrub_text("local@example.com", scoped) == "<REDACTED>"
+
+    def test_scope_redact_beats_a_global_parametrize(self, tmp_path) -> None:
+        """An explicit local redact must not be overridden by a global token.
+
+        Real case: one address is parametrized in two skills and redacted in a
+        third. The third's redaction is deliberate -- deferring to the global
+        token there would leak a name the author chose to remove.
+        """
+        path = tmp_path / "rules.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "parametrize": {"shared@example.com": "<FINANCE>"},
+                    "primitives": {"onepager": {"redact": ["shared@example.com"]}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        rules = load_rules(path)
+        assert scrub_text("mail shared@example.com", rules.for_primitive("onepager")) == (
+            "mail <REDACTED>"
+        )
+        # Everywhere else, the global token still applies.
+        assert scrub_text("mail shared@example.com", rules.for_primitive("other")) == (
+            "mail <FINANCE>"
+        )
+
+    def test_scope_inherits_the_global_redaction_token(self, tmp_path) -> None:
+        """A scope that does not set its own token uses the global one.
+
+        The dataclass default is non-empty, so a naive `scope.token or global`
+        silently substitutes the default and every scoped redaction differs
+        from every unscoped one.
+        """
+        path = tmp_path / "rules.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "redaction_token": "<REDACTED-EMAIL>",
+                    "primitives": {"onepager": {"redact": ["someone@example.com"]}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        scoped = load_rules(path).for_primitive("onepager")
+        assert scrub_text("mail someone@example.com", scoped) == "mail <REDACTED-EMAIL>"
+
+    def test_scope_may_override_the_redaction_token(self, tmp_path) -> None:
+        path = tmp_path / "rules.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "redaction_token": "<REDACTED-EMAIL>",
+                    "primitives": {
+                        "onepager": {
+                            "redact": ["someone@example.com"],
+                            "redaction_token": "<GONE>",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        scoped = load_rules(path).for_primitive("onepager")
+        assert scrub_text("mail someone@example.com", scoped) == "mail <GONE>"
+
+    def test_for_primitive_is_identity_without_a_scope(self, tmp_path) -> None:
+        path = tmp_path / "rules.json"
+        path.write_text(json.dumps({"redact": ["a@b.com"]}), encoding="utf-8")
+        rules = load_rules(path)
+        assert rules.for_primitive("anything").redact == rules.redact
+
+    def test_short_literals_are_rejected_inside_a_scope_too(self, tmp_path) -> None:
+        """The guard must not have a hole in the nested block."""
+        path = tmp_path / "rules.json"
+        path.write_text(
+            json.dumps({"primitives": {"invoice": {"redact": ["ab"]}}}), encoding="utf-8"
+        )
+        with pytest.raises(RulesError) as exc:
+            load_rules(path)
+        assert "short" in str(exc.value).lower()
+
+    def test_rejects_a_non_object_primitives_block(self, tmp_path) -> None:
+        path = tmp_path / "rules.json"
+        path.write_text(json.dumps({"primitives": ["invoice"]}), encoding="utf-8")
+        with pytest.raises(RulesError):
+            load_rules(path)
+
+
 class TestScrubTree:
     def test_rewrites_text_files_in_place(self, tmp_path) -> None:
         (tmp_path / "a.md").write_text("contact x@y.z", encoding="utf-8")

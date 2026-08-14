@@ -177,6 +177,29 @@ class TestStagingMechanics:
         assert "x@y.z" in source, "source was mutated"
 
 
+class TestPerPrimitiveScrub:
+    def test_each_primitive_gets_its_own_scoped_rules(self, repo, classification, tmp_path):
+        """One literal, two treatments, decided per primitive.
+
+        `pub` redacts the address; `corp` parametrizes it to a meaningful token.
+        A flat rule set cannot express this -- the more aggressive rule would
+        win everywhere and the token would be lost.
+        """
+        rules = ScrubRules(
+            redact=("x@y.z",),
+            parametrize={},
+            redaction_token="<REDACTED>",
+            primitives={"corp": ScrubRules(parametrize={"x@y.z": "<FINANCE>"})},
+        )
+        out = tmp_path / "out" / "company"
+        stage_ceiling(repo, out, classification=classification, ceiling="company", rules=rules)
+        pub = (out / ".apm" / "skills" / "pub" / "SKILL.md").read_text(encoding="utf-8")
+        corp = (out / ".apm" / "skills" / "corp" / "SKILL.md").read_text(encoding="utf-8")
+        assert "<REDACTED>" in pub
+        assert "<FINANCE>" in corp
+        assert "x@y.z" not in pub and "x@y.z" not in corp
+
+
 class TestUnresolvablePrimitives:
     """A classified primitive that is not on disk must never vanish silently.
 

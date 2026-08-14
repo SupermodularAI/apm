@@ -133,6 +133,19 @@ def stage_ceiling(
         )
 
     if rules is not None and not is_top:
+        # Two ordered passes, SCOPED FIRST:
+        #   1. each primitive with a scope, using its own rules;
+        #   2. the global set over everything else.
+        # The order matters and is not interchangeable. Running global first
+        # would replace a literal with the redaction token, leaving the scoped
+        # pass nothing to match -- the specific token would be unreachable.
+        # Scoped-first is safe because replacement is idempotent: pass 2 finds
+        # no remaining occurrence in an already-substituted file.
+        for prim in staged:
+            scoped = rules.for_primitive(prim.name)
+            if scoped is not rules:
+                scrub_tree(out_dir / prim.rel_path, scoped)
+
         scrub_tree(out_dir, rules)
 
     return tuple(staged)

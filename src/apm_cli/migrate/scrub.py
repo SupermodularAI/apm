@@ -80,15 +80,57 @@ class ScrubRules:
 
     redact: tuple[str, ...] = ()
     parametrize: dict[str, str] = None  # type: ignore[assignment]
-    redaction_token: str = DEFAULT_REDACTION_TOKEN
+    #: ``None`` means "not explicitly set" -- a scope then inherits the global
+    #: token rather than silently reverting to the module default.
+    redaction_token: str | None = DEFAULT_REDACTION_TOKEN
+    #: Rules scoped to a single primitive, overriding the global set for it.
+    primitives: dict[str, ScrubRules] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if self.parametrize is None:
             object.__setattr__(self, "parametrize", {})
+        if self.primitives is None:
+            object.__setattr__(self, "primitives", {})
 
     @property
     def is_empty(self) -> bool:
-        return not self.redact and not self.parametrize
+        return not self.redact and not self.parametrize and not self.primitives
+
+    def for_primitive(self, name: str) -> ScrubRules:
+        """Return the rules that apply to *name*.
+
+        A scope is **additive** to the global set -- it adds its own literals
+        rather than discarding the shared ones -- and **wins on conflict**, so
+        a literal the global set redacts can be parametrized for one primitive.
+        Without that precedence the specific intent would be unreachable.
+        """
+        scope = self.primitives.get(name)
+        if scope is None:
+            return self
+
+        # Precedence, strongest first:
+        #   scope.parametrize > scope.redact > global.parametrize > global.redact
+        # Only the scope's OWN rules override the global ones. Letting a global
+        # parametrize suppress a scope's explicit redact would invert the point
+        # of scoping -- an author who redacted a name locally would silently get
+        # the shared token instead.
+        parametrize = {
+            lit: token for lit, token in self.parametrize.items() if lit not in scope.redact
+        }
+        parametrize.update(scope.parametrize)
+
+        # A literal this scope parametrizes must not also be redacted, or the
+        # two replacements race within one pass.
+        redact = tuple(
+            dict.fromkeys(lit for lit in (*scope.redact, *self.redact) if lit not in parametrize)
+        )
+        return ScrubRules(
+            redact=redact,
+            parametrize=parametrize,
+            redaction_token=(
+                scope.redaction_token if scope.redaction_token is not None else self.redaction_token
+            ),
+        )
 
 
 def load_rules(path: Path) -> ScrubRules:
@@ -100,8 +142,15 @@ def load_rules(path: Path) -> ScrubRules:
           "redact": ["someone@example.com"],
           "parametrize": {"U0123": "<SLACK_USER_ID>"},
           "redaction_token": "<REDACTED>",
-          "allow_short_literals": false
+          "allow_short_literals": false,
+          "primitives": {
+            "invoice": {"parametrize": {"someone@example.com": "<FINANCE>"}}
+          }
         }
+
+    A ``primitives`` scope is additive to the global set and wins on conflict,
+    so one literal can be redacted generally and parametrized for a named
+    primitive.
 
     Literals shorter than :data:`MIN_LITERAL_LENGTH` are rejected unless
     ``allow_short_literals`` is set: they match inside ordinary words and
@@ -126,36 +175,64 @@ def load_rules(path: Path) -> ScrubRules:
                 "only if you are certain."
             )
 
-    redact_raw = payload.get("redact", [])
-    if not isinstance(redact_raw, list):
-        raise RulesError(f"{path}: 'redact' must be a list")
-    redact: list[str] = []
-    for item in redact_raw:
-        if not isinstance(item, str):
-            raise RulesError(f"{path}: 'redact' entries must be strings")
-        if not item:
-            # An empty literal matches at every position and would shred the file.
-            raise RulesError(f"{path}: 'redact' contains an empty literal")
-        _check_length(item, "'redact'")
-        redact.append(item)
+    def _parse_block(block: dict, where: str) -> ScrubRules:
+        """Parse one rules block. Shared by the global set and each scope, so
+        validation can never differ between them."""
+        redact_raw = block.get("redact", [])
+        if not isinstance(redact_raw, list):
+            raise RulesError(f"{path}: {where}'redact' must be a list")
+        redact: list[str] = []
+        for item in redact_raw:
+            if not isinstance(item, str):
+                raise RulesError(f"{path}: {where}'redact' entries must be strings")
+            if not item:
+                # An empty literal matches at every position and would shred the file.
+                raise RulesError(f"{path}: {where}'redact' contains an empty literal")
+            _check_length(item, f"{where}'redact'")
+            redact.append(item)
 
-    param_raw = payload.get("parametrize", {})
-    if not isinstance(param_raw, dict):
-        raise RulesError(f"{path}: 'parametrize' must be an object")
-    parametrize: dict[str, str] = {}
-    for key, value in param_raw.items():
-        if not isinstance(key, str) or not key:
-            raise RulesError(f"{path}: 'parametrize' keys must be non-empty strings")
-        if not isinstance(value, str) or not value:
-            raise RulesError(f"{path}: 'parametrize[{key}]' must be a non-empty string token")
-        _check_length(key, "'parametrize'")
-        parametrize[key] = value
+        param_raw = block.get("parametrize", {})
+        if not isinstance(param_raw, dict):
+            raise RulesError(f"{path}: {where}'parametrize' must be an object")
+        parametrize: dict[str, str] = {}
+        for key, value in param_raw.items():
+            if not isinstance(key, str) or not key:
+                raise RulesError(f"{path}: {where}'parametrize' keys must be non-empty strings")
+            if not isinstance(value, str) or not value:
+                raise RulesError(
+                    f"{path}: {where}'parametrize[{key}]' must be a non-empty string token"
+                )
+            _check_length(key, f"{where}'parametrize'")
+            parametrize[key] = value
 
-    token = payload.get("redaction_token", DEFAULT_REDACTION_TOKEN)
-    if not isinstance(token, str) or not token:
-        raise RulesError(f"{path}: 'redaction_token' must be a non-empty string")
+        # Absent inside a scope means "inherit"; absent at the top level means
+        # the module default.
+        default_token = DEFAULT_REDACTION_TOKEN if not where else None
+        token = block.get("redaction_token", default_token)
+        if token is not None and (not isinstance(token, str) or not token):
+            raise RulesError(f"{path}: {where}'redaction_token' must be a non-empty string")
 
-    return ScrubRules(redact=tuple(redact), parametrize=parametrize, redaction_token=token)
+        return ScrubRules(redact=tuple(redact), parametrize=parametrize, redaction_token=token)
+
+    globals_ = _parse_block(payload, "")
+
+    scopes_raw = payload.get("primitives", {})
+    if not isinstance(scopes_raw, dict):
+        raise RulesError(f"{path}: 'primitives' must be an object keyed by primitive name")
+    primitives: dict[str, ScrubRules] = {}
+    for name, block in scopes_raw.items():
+        if not isinstance(name, str) or not name:
+            raise RulesError(f"{path}: 'primitives' keys must be non-empty strings")
+        if not isinstance(block, dict):
+            raise RulesError(f"{path}: 'primitives[{name}]' must be an object")
+        primitives[name] = _parse_block(block, f"primitives[{name}] ")
+
+    return ScrubRules(
+        redact=globals_.redact,
+        parametrize=globals_.parametrize,
+        redaction_token=globals_.redaction_token,
+        primitives=primitives,
+    )
 
 
 def _ordered_replacements(rules: ScrubRules) -> list[tuple[str, str]]:
