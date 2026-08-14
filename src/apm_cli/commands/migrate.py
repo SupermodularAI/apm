@@ -99,6 +99,32 @@ def migrate(ctx: click.Context) -> None:
     help="Identifier/PII rules to apply while staging. Never bundled -- always supplied.",
 )
 @click.option(
+    "--classification",
+    "classification_file",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    default=None,
+    help="Agent classification response to consume instead of dispatching.",
+)
+@click.option(
+    "--require-rules/--allow-unscrubbed",
+    "require_rules",
+    default=True,
+    show_default=True,
+    help=(
+        "Refuse to stage a shareable ceiling without --rules. Disable only when "
+        "the source repository is known to contain no identifiers."
+    ),
+)
+@click.option(
+    "--skip-missing",
+    is_flag=True,
+    default=False,
+    help=(
+        "Stage without primitives that are classified but absent from the working "
+        "tree, instead of failing. Use for a repo mid-refactor."
+    ),
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     default=False,
@@ -118,6 +144,9 @@ def init(
     agent: str,
     out_dir: str | None,
     rules_file: str | None,
+    classification_file: str | None,
+    require_rules: bool,
+    skip_missing: bool,
     dry_run: bool,
     yes: bool,
     verbose: bool,
@@ -186,17 +215,82 @@ def init(
         click.echo(prompt)
         return
 
-    # Phase 2 wires dispatch -> validate -> repair -> stage -> emit here.
-    _rich_echo(
-        f"Enumerated {len(result.primitives)} primitive(s) for ceilings {', '.join(selected)}.",
-        symbol="list",
+    from ..migrate.classification import ClassificationError, parse_classification
+    from ..migrate.scrub import RulesError, load_rules
+    from ..migrate.stage import StagingError, emit_manifest, stage_ceiling
+
+    if classification_file is None:
+        # Dispatching to a live agent is not wired yet.  Everything downstream
+        # of the response is, so --classification accepts one from disk.
+        _rich_error(
+            "No classification source. Dispatch to an agent runtime is not wired yet; "
+            "pass --classification FILE with a response, or --dry-run to review the "
+            "prompt that will be dispatched.",
+            symbol="error",
+        )
+        raise SystemExit(1)
+
+    rules = None
+    if rules_file is not None:
+        try:
+            rules = load_rules(Path(rules_file))
+        except RulesError as exc:
+            _rich_error(str(exc), symbol="error")
+            raise SystemExit(1) from exc
+
+    try:
+        classification = parse_classification(
+            Path(classification_file).read_text(encoding="utf-8"),
+            primitives=result.primitives,
+            ceilings=CEILINGS,
+        )
+    except ClassificationError as exc:
+        _rich_error(str(exc), symbol="error")
+        raise SystemExit(1) from exc
+    except OSError as exc:
+        _rich_error(f"cannot read {classification_file}: {exc}", symbol="error")
+        raise SystemExit(1) from exc
+
+    project_name = project_root.name or "migrated-project"
+    for ceiling in selected:
+        ceiling_dir = staging_root / ceiling
+        try:
+            staged = stage_ceiling(
+                project_root,
+                ceiling_dir,
+                classification=classification,
+                ceiling=ceiling,
+                rules=rules,
+                ceilings=CEILINGS,
+                require_rules=require_rules,
+                skip_missing=skip_missing,
+            )
+            if not staged:
+                _rich_info(
+                    f"ceiling '{ceiling}': nothing at or below this audience -- skipped.",
+                    symbol="warning",
+                )
+                continue
+            emit_manifest(
+                ceiling_dir,
+                staged=staged,
+                name=f"{project_name}-{ceiling}",
+                version="0.1.0",
+            )
+        except StagingError as exc:
+            _rich_error(str(exc), symbol="error")
+            raise SystemExit(1) from exc
+
+        _rich_echo(
+            f"  {ceiling}: staged {len(staged)} primitive(s) -> {ceiling_dir}",
+            symbol="list",
+        )
+
+    _rich_info(
+        f"Wrote per-ceiling manifests under {staging_root}. "
+        f"Run 'apm pack' inside a ceiling directory to produce its artifacts.",
+        symbol="info",
     )
-    _rich_error(
-        "Classification is not implemented yet (Phase 2). "
-        "Re-run with --dry-run to review the prompt that will be dispatched.",
-        symbol="error",
-    )
-    raise SystemExit(1)
 
 
 @migrate.command(
@@ -221,10 +315,18 @@ def init(
 )
 def check(path: str, manifest_path: str | None) -> None:
     """Validate a classification produced by ``apm migrate init``."""
-    from ..utils.console import _rich_error
+    from ..utils.console import _rich_error, _rich_info
 
     project_root = Path(path)
-    candidate = Path(manifest_path) if manifest_path else project_root / DEFAULT_OUT
+
+    if manifest_path:
+        candidate = Path(manifest_path)
+    else:
+        # PATH may be either the source repo (manifests live under DEFAULT_OUT)
+        # or a staging directory passed directly. Accept both -- appending
+        # DEFAULT_OUT to a staging root would look for `staged/.apm-migrate`.
+        default_root = project_root / DEFAULT_OUT
+        candidate = default_root if default_root.exists() else project_root
 
     if not candidate.exists():
         _rich_error(
@@ -234,9 +336,23 @@ def check(path: str, manifest_path: str | None) -> None:
         )
         raise SystemExit(1)
 
-    # Phase 2 implements the completeness + shape assertions.
-    _rich_error(
-        "Validation is not implemented yet (Phase 2).",
-        symbol="error",
+    from ..migrate.verify import ManifestDefect, verify_staged_manifests
+
+    manifests = [candidate] if candidate.is_file() else sorted(candidate.rglob("apm.yml"))
+    if not manifests:
+        _rich_error(
+            f"No apm.yml manifest found under {candidate}. Run 'apm migrate init' first.",
+            symbol="error",
+        )
+        raise SystemExit(1)
+
+    defects: list[ManifestDefect] = verify_staged_manifests(manifests)
+    if defects:
+        for defect in defects:
+            _rich_error(f"{defect.manifest}: {defect.message}", symbol="error")
+        raise SystemExit(1)
+
+    _rich_info(
+        f"Validated {len(manifests)} manifest(s) under {candidate}.",
+        symbol="info",
     )
-    raise SystemExit(1)

@@ -241,3 +241,136 @@ class TestMigrateCheckSurface:
         result = runner.invoke(cli, ["migrate", "check", str(tmp_path)])
         assert result.exit_code == 1, result.output
         assert "manifest" in result.output.lower()
+
+
+class TestMigrateEndToEnd:
+    """init -> staged tree -> check, with a classification supplied from disk.
+
+    Live agent dispatch is not wired yet; ``--classification`` stands in for it,
+    which keeps the whole downstream pipeline exercised.
+    """
+
+    @staticmethod
+    def _classification(*names: str) -> str:
+        import json
+
+        return json.dumps(
+            {
+                "domains": {"tools": {"description": "Tools."}},
+                "primitives": {
+                    n: {"domain": "tools", "audience": "public", "confidential": False}
+                    for n in names
+                },
+            }
+        )
+
+    def test_init_stages_and_check_passes(self, runner, tmp_path) -> None:
+        repo = tmp_path / "repo"
+        _write_skill(repo, "alpha")
+        response = tmp_path / "resp.json"
+        response.write_text(self._classification("alpha"), encoding="utf-8")
+        out = tmp_path / "staged"
+
+        result = runner.invoke(
+            cli,
+            [
+                "migrate",
+                "init",
+                str(repo),
+                "--classification",
+                str(response),
+                "--out",
+                str(out),
+                "--ceiling",
+                "public",
+                "--allow-unscrubbed",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert (out / "public" / "apm.yml").is_file()
+        assert (out / "public" / ".apm" / "skills" / "alpha" / "SKILL.md").is_file()
+
+        checked = runner.invoke(cli, ["migrate", "check", str(out)])
+        assert checked.exit_code == 0, checked.output
+
+    def test_init_rejects_an_incomplete_classification(self, runner, tmp_path) -> None:
+        """The completeness gate must fire through the CLI, not just in unit tests."""
+        repo = tmp_path / "repo"
+        _write_skill(repo, "alpha")
+        _write_skill(repo, "beta")
+        response = tmp_path / "resp.json"
+        response.write_text(self._classification("alpha"), encoding="utf-8")
+
+        result = runner.invoke(
+            cli,
+            [
+                "migrate",
+                "init",
+                str(repo),
+                "--classification",
+                str(response),
+                "--out",
+                str(tmp_path / "staged"),
+                "--allow-unscrubbed",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "beta" in result.output
+
+    def test_shareable_ceiling_refuses_without_rules(self, runner, tmp_path) -> None:
+        """Fail closed by default: no --rules means no shareable staging."""
+        repo = tmp_path / "repo"
+        _write_skill(repo, "alpha")
+        response = tmp_path / "resp.json"
+        response.write_text(self._classification("alpha"), encoding="utf-8")
+
+        result = runner.invoke(
+            cli,
+            [
+                "migrate",
+                "init",
+                str(repo),
+                "--classification",
+                str(response),
+                "--out",
+                str(tmp_path / "staged"),
+                "--ceiling",
+                "public",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "rules" in result.output.lower()
+
+    def test_rules_are_applied_to_staged_output(self, runner, tmp_path) -> None:
+        import json as _json
+
+        repo = tmp_path / "repo"
+        _write_skill(repo, "alpha", body="reach me at someone@example.com")
+        response = tmp_path / "resp.json"
+        response.write_text(self._classification("alpha"), encoding="utf-8")
+        rules = tmp_path / "rules.json"
+        rules.write_text(_json.dumps({"redact": ["someone@example.com"]}), encoding="utf-8")
+        out = tmp_path / "staged"
+
+        result = runner.invoke(
+            cli,
+            [
+                "migrate",
+                "init",
+                str(repo),
+                "--classification",
+                str(response),
+                "--rules",
+                str(rules),
+                "--out",
+                str(out),
+                "--ceiling",
+                "public",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        staged = (out / "public" / ".apm" / "skills" / "alpha" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        assert "someone@example.com" not in staged
+        assert "<REDACTED>" in staged
