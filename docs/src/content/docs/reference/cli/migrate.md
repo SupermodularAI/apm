@@ -103,6 +103,19 @@ Output is written to a staging directory, never in place. Each ceiling gets its 
 `includes:` governs **packing**, not **installing**. `apm install <git-url>` against the source repository integrates everything present on disk, regardless of audience. Publish the packed artifact if audience separation must hold for consumers.
 :::
 
+:::caution[A directory holding only dotfiles does not survive install]
+`apm pack` preserves a directory whose only entries are dotfiles (verified: both
+`state/.gitignore` and `template/data/.gitkeep` reach the bundle), but
+`apm install` does not recreate it on the consumer side. A directory containing
+any non-dotfile comes through normally.
+
+This matters when a primitive relies on an empty directory existing — a
+placeholder the user is told to fill, or a path a script writes into. Either have
+the script `mkdir -p` before writing, or ship a non-dotfile alongside. This is
+**not** a general "dotfiles are dropped" rule: individual dotfiles inside a
+directory that also holds regular files are unaffected.
+:::
+
 The staging directory must not be a harness directory (`.claude`, `.cursor`, `.codex`, `.opencode`, `.github`). APM's target auto-detection scans for those names, so writing a staged tree into one would change how the repository itself resolves targets. `apm migrate init` refuses rather than corrupt the repo it was pointed at.
 
 ## See also
