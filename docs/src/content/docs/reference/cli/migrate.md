@@ -116,6 +116,31 @@ the script `mkdir -p` before writing, or ship a non-dotfile alongside. This is
 directory that also holds regular files are unaffected.
 :::
 
+## Known limitation: only primitives are packaged
+
+`apm migrate init` stages **skills, agents and hooks**. It does not package the
+sibling directories a primitive may depend on -- `scripts/`, `reference/`,
+`templates/`, `assets/` and the like -- because APM has no primitive type for
+them, so `apm install` would not deploy them even if they were listed in
+`includes:` (verified: such files reach `apm_modules/<pkg>/` but are never
+integrated into the consumer's tree).
+
+This is invisible in the staged output and only bites on install. A skill whose
+body invokes a companion file — commonly written
+`${CLAUDE_PROJECT_DIR}/.claude/scripts/x.mjs`, which resolves against the
+*consumer's* project root — installs cleanly and then fails at first use.
+
+Before migrating, check what your primitives reference:
+
+```bash
+grep -rlE '\.(claude|apm)/(scripts|reference|templates|assets)/' .claude/skills .claude/agents
+```
+
+A non-empty result means the packaged primitives will not be self-contained.
+Until APM can deploy companion directories, either keep those files in the
+consuming repository, or rewrite the references to resolve inside the installed
+package.
+
 The staging directory must not be a harness directory (`.claude`, `.cursor`, `.codex`, `.opencode`, `.github`). APM's target auto-detection scans for those names, so writing a staged tree into one would change how the repository itself resolves targets. `apm migrate init` refuses rather than corrupt the repo it was pointed at.
 
 ## See also
