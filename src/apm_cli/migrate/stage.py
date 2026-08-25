@@ -111,7 +111,8 @@ def stage_ceiling(
             unresolved.append(prim.name)
             continue
         src = source_root / rel
-        dest = out_dir / rel
+        pkg_rel = _package_rel_path(rel)
+        dest = out_dir / pkg_rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         if src.is_dir():
             # copy2-based: preserves mode, so a hook script keeps its exec bit.
@@ -122,7 +123,9 @@ def stage_ceiling(
             shutil.copy2(src, dest)
         else:
             continue
-        staged.append(StagedPrimitive(name=prim.name, domain=prim.domain, rel_path=rel))
+        staged.append(
+            StagedPrimitive(name=prim.name, domain=prim.domain, rel_path=pkg_rel)
+        )
 
     if unresolved and not skip_missing:
         raise StagingError(
@@ -149,6 +152,35 @@ def stage_ceiling(
         scrub_tree(out_dir, rules)
 
     return tuple(staged)
+
+
+def _package_rel_path(source_rel: str) -> str:
+    """Map a source-repo path to its place in an APM **package**.
+
+    ``apm install`` discovers skills at ``skills/`` or ``.apm/skills/`` and
+    agents at ``.apm/agents/``; it never reads a harness directory such as
+    ``.claude/``.  Staging the source layout verbatim therefore produced a
+    manifest that packed cleanly and deployed nothing -- silently, because an
+    unrecognised path is not an error, just not a primitive.
+
+    Agents additionally need the ``.agent.md`` suffix: a bare ``.md`` under
+    ``.apm/agents/`` is carried into ``apm_modules/`` but never deployed.
+    """
+    parts = source_rel.split("/")
+    # <root>/<kind_dir>/<rest...> -- roots are .claude, .apm, .agents, ...
+    if len(parts) < 3:
+        return source_rel
+    kind_dir, rest = parts[1], parts[2:]
+    if kind_dir == "skills":
+        return "/".join(["skills", *rest])
+    if kind_dir == "agents":
+        leaf = rest[-1]
+        if leaf.endswith(".md") and not leaf.endswith(".agent.md"):
+            rest = [*rest[:-1], leaf[: -len(".md")] + ".agent.md"]
+        return "/".join([".apm", "agents", *rest])
+    if kind_dir in ("commands", "prompts"):
+        return "/".join([".apm", kind_dir, *rest])
+    return source_rel
 
 
 def _source_rel_path(source_root: Path, name: str) -> str | None:

@@ -28,6 +28,19 @@ from pathlib import Path
 from .filters import should_exclude
 
 #: Where hooks live in a Claude Code repository.
+def _package_rel_path(source_rel: str) -> str:
+    """Map a source hook path into APM package layout.
+
+    ``HookIntegrator`` reads ``hooks/`` or ``.apm/hooks/`` from a package; a
+    ``.claude/hooks/`` directory is never consulted, so staging the source
+    path verbatim shipped scripts APM would not register.
+    """
+    parts = source_rel.split("/")
+    if len(parts) >= 2 and parts[0].startswith(".") and parts[1] == "hooks":
+        return "/".join(["hooks", *parts[2:]])
+    return source_rel
+
+
 HOOKS_DIR = Path(".claude") / "hooks"
 HOOKS_DESCRIPTOR = Path(".claude") / "hooks.json"
 
@@ -114,23 +127,27 @@ def stage_hooks(
         elif hook.name == HOOKS_DESCRIPTOR.name:
             _descriptor_references(src, ())  # validates JSON, ignores the result
 
-        dest = out_dir / hook.rel_path
+        dest = out_dir / _package_rel_path(hook.rel_path)
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dest)  # copy2 preserves the exec bit
-        staged.append(hook)
+        # rel_path becomes an ``includes:`` entry, so it must name the file's
+        # place in the PACKAGE, not in the source repo.
+        staged.append(
+            StagedHook(name=hook.name, rel_path=_package_rel_path(hook.rel_path))
+        )
 
     # A repo whose wiring lives in settings.json ships no hooks.json of its
     # own. Derive one, or the scripts above are delivered and never fire.
     if not any(h.name == HOOKS_DESCRIPTOR.name for h in staged):
         derived = derive_descriptor(source_root, staged_names=tuple(h.name for h in staged))
         if derived is not None:
-            dest = out_dir / DERIVED_DESCRIPTOR_PATH
+            dest = out_dir / _package_rel_path(DERIVED_DESCRIPTOR_PATH.as_posix())
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(json.dumps(derived, indent=2) + "\n", encoding="utf-8")
             staged.append(
                 StagedHook(
                     name=DERIVED_DESCRIPTOR_PATH.name,
-                    rel_path=DERIVED_DESCRIPTOR_PATH.as_posix(),
+                    rel_path=_package_rel_path(DERIVED_DESCRIPTOR_PATH.as_posix()),
                 )
             )
 

@@ -68,16 +68,16 @@ class TestStaging:
             repo, out, restricted=(), ceiling="public", ceilings=("public", "personal")
         )
         rels = {s.rel_path for s in staged}
-        assert ".claude/hooks/shared.sh" in rels
+        assert "hooks/shared.sh" in rels
         assert ".claude/hooks.json" in rels
-        assert (out / ".claude" / "hooks" / "shared.sh").is_file()
+        assert (out / "hooks" / "shared.sh").is_file()
 
     def test_preserves_the_exec_bit(self, repo, tmp_path):
         """A hook script without +x is delivered but never fires."""
         out = tmp_path / "out"
         out.mkdir()
         stage_hooks(repo, out, restricted=(), ceiling="public", ceilings=("public", "personal"))
-        mode = (out / ".claude" / "hooks" / "shared.sh").stat().st_mode
+        mode = (out / "hooks" / "shared.sh").stat().st_mode
         assert stat.S_IMODE(mode) & 0o111, "exec bit lost — the hook would not fire"
 
     def test_restricted_scripts_are_withheld_below_the_top_ceiling(self, repo, tmp_path):
@@ -96,9 +96,9 @@ class TestStaging:
             ceiling="public",
             ceilings=("public", "personal"),
         )
-        assert not (out / ".claude" / "hooks" / "telemetry.sh").exists()
+        assert not (out / "hooks" / "telemetry.sh").exists()
         assert "telemetry.sh" not in {s.name for s in staged}
-        assert (out / ".claude" / "hooks" / "shared.sh").is_file()
+        assert (out / "hooks" / "shared.sh").is_file()
 
     def test_restricted_scripts_ship_at_the_top_ceiling(self, repo, tmp_path):
         """`personal` is self-rehydration -- the owner gets their own files."""
@@ -111,7 +111,7 @@ class TestStaging:
             ceiling="personal",
             ceilings=("public", "personal"),
         )
-        assert (out / ".claude" / "hooks" / "telemetry.sh").is_file()
+        assert (out / "hooks" / "telemetry.sh").is_file()
 
     def test_descriptor_is_withheld_when_it_wires_a_restricted_script(self, repo, tmp_path):
         """A descriptor referencing a withheld script leaves a dangling command.
@@ -313,9 +313,9 @@ class TestDescriptorDerivation:
         staged = stage_hooks(
             repo, out, restricted=(), ceiling="public", ceilings=("public", "personal")
         )
-        assert (out / ".claude" / "hooks" / "hooks.json").is_file()
+        assert (out / "hooks" / "hooks.json").is_file()
         assert not (out / ".claude" / "hooks.json").exists()
-        assert ".claude/hooks/hooks.json" in {s.rel_path for s in staged}
+        assert "hooks/hooks.json" in {s.rel_path for s in staged}
 
     def test_an_existing_descriptor_is_preferred_over_deriving_one(self, repo, tmp_path):
         """A repo that ships its own hooks.json is authoritative.

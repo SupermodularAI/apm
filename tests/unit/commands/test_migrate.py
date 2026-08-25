@@ -288,7 +288,7 @@ class TestMigrateEndToEnd:
         )
         assert result.exit_code == 0, result.output
         assert (out / "public" / "apm.yml").is_file()
-        assert (out / "public" / ".apm" / "skills" / "alpha" / "SKILL.md").is_file()
+        assert (out / "public" / "skills" / "alpha" / "SKILL.md").is_file()
 
         checked = runner.invoke(cli, ["migrate", "check", str(out)])
         assert checked.exit_code == 0, checked.output
@@ -412,7 +412,7 @@ class TestMigrateEndToEnd:
             ],
         )
         assert result.exit_code == 0, result.output
-        staged = (out / "public" / ".apm" / "skills" / "alpha" / "SKILL.md").read_text(
+        staged = (out / "public" / "skills" / "alpha" / "SKILL.md").read_text(
             encoding="utf-8"
         )
         assert "someone@example.com" not in staged

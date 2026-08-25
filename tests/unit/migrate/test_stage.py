@@ -60,7 +60,9 @@ def classification(primitives):
 
 
 def _staged_names(out_dir):
-    skills = out_dir / ".apm" / "skills"
+    # Staging emits PACKAGE layout (``skills/``), not the source layout it read
+    # from -- see ``_package_rel_path``.
+    skills = out_dir / "skills"
     return {p.name for p in skills.iterdir()} if skills.is_dir() else set()
 
 
@@ -111,7 +113,7 @@ class TestScrubIntegration:
         out = tmp_path / "out" / "public"
         rules = ScrubRules(redact=("x@y.z",), parametrize={}, redaction_token="<REDACTED>")
         stage_ceiling(repo, out, classification=classification, ceiling="public", rules=rules)
-        text = (out / ".apm" / "skills" / "pub" / "SKILL.md").read_text(encoding="utf-8")
+        text = (out / "skills" / "pub" / "SKILL.md").read_text(encoding="utf-8")
         assert "x@y.z" not in text
         assert "<REDACTED>" in text
 
@@ -120,7 +122,7 @@ class TestScrubIntegration:
         out = tmp_path / "out" / "personal"
         rules = ScrubRules(redact=("x@y.z",), parametrize={}, redaction_token="<REDACTED>")
         stage_ceiling(repo, out, classification=classification, ceiling="personal", rules=rules)
-        text = (out / ".apm" / "skills" / "pub" / "SKILL.md").read_text(encoding="utf-8")
+        text = (out / "skills" / "pub" / "SKILL.md").read_text(encoding="utf-8")
         assert "x@y.z" in text
 
     def test_refuses_to_stage_below_top_ceiling_without_rules_when_required(
@@ -150,7 +152,7 @@ class TestStagingMechanics:
 
         out = tmp_path / "out" / "public"
         stage_ceiling(repo, out, classification=classification, ceiling="public", rules=None)
-        staged = out / ".apm" / "skills" / "pub" / "run.sh"
+        staged = out / "skills" / "pub" / "run.sh"
         assert stat.S_IMODE(staged.stat().st_mode) & 0o111, "exec bit lost in staging"
 
     def test_is_idempotent(self, repo, classification, tmp_path):
@@ -193,8 +195,8 @@ class TestPerPrimitiveScrub:
         )
         out = tmp_path / "out" / "company"
         stage_ceiling(repo, out, classification=classification, ceiling="company", rules=rules)
-        pub = (out / ".apm" / "skills" / "pub" / "SKILL.md").read_text(encoding="utf-8")
-        corp = (out / ".apm" / "skills" / "corp" / "SKILL.md").read_text(encoding="utf-8")
+        pub = (out / "skills" / "pub" / "SKILL.md").read_text(encoding="utf-8")
+        corp = (out / "skills" / "corp" / "SKILL.md").read_text(encoding="utf-8")
         assert "<REDACTED>" in pub
         assert "<FINANCE>" in corp
         assert "x@y.z" not in pub and "x@y.z" not in corp
@@ -277,7 +279,7 @@ class TestRuntimeArtifactExclusion:
 
         out = tmp_path / "out" / "public"
         stage_ceiling(repo, out, classification=classification, ceiling="public", rules=None)
-        assert not (out / ".apm" / "skills" / "pub" / "logs" / "run-20260101.log").exists()
+        assert not (out / "skills" / "pub" / "logs" / "run-20260101.log").exists()
 
     def test_excludes_a_state_directory(self, repo, classification, tmp_path):
         state = repo / ".apm" / "skills" / "pub" / "state"
@@ -286,7 +288,7 @@ class TestRuntimeArtifactExclusion:
 
         out = tmp_path / "out" / "public"
         stage_ceiling(repo, out, classification=classification, ceiling="public", rules=None)
-        assert not (out / ".apm" / "skills" / "pub" / "state" / "cron.last-run").exists()
+        assert not (out / "skills" / "pub" / "state" / "cron.last-run").exists()
 
     def test_keeps_the_tracked_gitignore_placeholder(self, repo, classification, tmp_path):
         """A `.gitignore` directly inside logs/ is tracked source, not runtime."""
@@ -297,7 +299,7 @@ class TestRuntimeArtifactExclusion:
 
         out = tmp_path / "out" / "public"
         stage_ceiling(repo, out, classification=classification, ceiling="public", rules=None)
-        staged_logs = out / ".apm" / "skills" / "pub" / "logs"
+        staged_logs = out / "skills" / "pub" / "logs"
         assert (staged_logs / ".gitignore").is_file()
         assert not (staged_logs / "noise.log").exists()
 
@@ -305,7 +307,7 @@ class TestRuntimeArtifactExclusion:
         (repo / ".apm" / "skills" / "pub" / "debug.log").write_text("x", encoding="utf-8")
         out = tmp_path / "out" / "public"
         stage_ceiling(repo, out, classification=classification, ceiling="public", rules=None)
-        assert not (out / ".apm" / "skills" / "pub" / "debug.log").exists()
+        assert not (out / "skills" / "pub" / "debug.log").exists()
 
     def test_excludes_live_crons_json(self, repo, classification, tmp_path):
         """A crons/*.json is live scheduler config, not shippable source.
@@ -321,7 +323,7 @@ class TestRuntimeArtifactExclusion:
 
         out = tmp_path / "out" / "public"
         stage_ceiling(repo, out, classification=classification, ceiling="public", rules=None)
-        staged = out / ".apm" / "skills" / "pub" / "crons"
+        staged = out / "skills" / "pub" / "crons"
         assert not (staged / "nightly.json").exists()
         assert (staged / "nightly.json.example").is_file()
         assert (staged / "README.md").is_file()
@@ -331,7 +333,7 @@ class TestRuntimeArtifactExclusion:
         (repo / ".apm" / "skills" / "pub" / "SKILL.md.bak").write_text("old", encoding="utf-8")
         out = tmp_path / "out" / "public"
         stage_ceiling(repo, out, classification=classification, ceiling="public", rules=None)
-        staged = out / ".apm" / "skills" / "pub"
+        staged = out / "skills" / "pub"
         assert not (staged / ".DS_Store").exists()
         assert not (staged / "SKILL.md.bak").exists(), "a .bak can hold pre-scrub content"
 
@@ -345,7 +347,7 @@ class TestManifestEmission:
         emit_manifest(out, staged=staged, name="probe", version="0.1.0")
 
         data = yaml.safe_load((out / "apm.yml").read_text(encoding="utf-8"))
-        assert data["includes"] == [".apm/skills/pub"]
+        assert data["includes"] == ["skills/pub"]
 
     def test_manifest_carries_required_fields(self, repo, classification, tmp_path):
         """name + version are the only schema-required keys."""
@@ -385,3 +387,92 @@ class TestManifestEmission:
         emit_manifest(out, staged=staged, name="probe", version="0.1.0")
         raw = (out / "apm.yml").read_text(encoding="utf-8")
         json.dumps(yaml.safe_load(raw))  # must round-trip
+
+
+class TestPackageLayout:
+    """A staged tree must be an APM *package*, not a mirror of the source repo.
+
+    ``apm install`` discovers skills at ``skills/`` or ``.apm/skills/`` and agents
+    at ``.apm/agents/`` (see ``SkillIntegrator.available_skill_names`` and
+    ``AgentIntegrator``); it never reads ``.claude/``.  Staging a Claude-Code repo
+    verbatim therefore produced a manifest that packed but deployed nothing.
+    """
+
+    @pytest.fixture
+    def claude_repo(self, tmp_path):
+        """A source repo laid out the way a real Claude Code repo is."""
+        root = tmp_path / "claude-src"
+        skill = root / ".claude" / "skills" / "pub"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: pub\ndescription: pub.\n---\n\nbody\n", encoding="utf-8"
+        )
+        agents = root / ".claude" / "agents"
+        agents.mkdir(parents=True)
+        (agents / "corp.md").write_text(
+            "---\nname: corp\ndescription: corp.\n---\n\nbody\n", encoding="utf-8"
+        )
+        return root
+
+    @pytest.fixture
+    def claude_classification(self):
+        prims = (
+            Primitive(name="pub", kind="skill", rel_path=".claude/skills/pub"),
+            Primitive(name="corp", kind="agent", rel_path=".claude/agents/corp.md"),
+        )
+        return parse_classification(
+            {
+                "domains": {"tools": {"description": "Tools."}},
+                "primitives": {
+                    "pub": {"domain": "tools", "audience": "public"},
+                    "corp": {"domain": "tools", "audience": "public"},
+                },
+            },
+            primitives=prims,
+            ceilings=CEILINGS,
+        )
+
+    def test_skill_lands_where_apm_install_looks(
+        self, claude_repo, claude_classification, tmp_path
+    ):
+        out = tmp_path / "out"
+        stage_ceiling(
+            claude_repo, out, classification=claude_classification,
+            ceiling="public", rules=None,
+        )
+        assert (out / "skills" / "pub" / "SKILL.md").is_file()
+
+    def test_agent_lands_where_apm_install_looks(
+        self, claude_repo, claude_classification, tmp_path
+    ):
+        out = tmp_path / "out"
+        stage_ceiling(
+            claude_repo, out, classification=claude_classification,
+            ceiling="public", rules=None,
+        )
+        # APM requires the .agent.md suffix; a bare .md in .apm/agents/ is
+        # carried into apm_modules/ but never deployed.
+        assert (out / ".apm" / "agents" / "corp.agent.md").is_file()
+
+    def test_no_harness_directory_in_the_staged_package(
+        self, claude_repo, claude_classification, tmp_path
+    ):
+        out = tmp_path / "out"
+        stage_ceiling(
+            claude_repo, out, classification=claude_classification,
+            ceiling="public", rules=None,
+        )
+        assert not (out / ".claude").exists()
+
+    def test_manifest_includes_reference_package_paths(
+        self, claude_repo, claude_classification, tmp_path
+    ):
+        out = tmp_path / "out"
+        staged = stage_ceiling(
+            claude_repo, out, classification=claude_classification,
+            ceiling="public", rules=None,
+        )
+        emit_manifest(out, staged=staged, name="p", version="0.1.0")
+        includes = yaml.safe_load((out / "apm.yml").read_text())["includes"]
+        assert not any(i.startswith(".claude/") for i in includes), includes
+        assert "skills/pub" in includes
