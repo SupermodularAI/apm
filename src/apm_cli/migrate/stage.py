@@ -102,8 +102,18 @@ def stage_ceiling(
 
     staged: list[StagedPrimitive] = []
     unresolved: list[str] = []
-    for prim in sorted(selected, key=lambda p: p.name):
-        rel = _source_rel_path(source_root, prim.name)
+    for prim in sorted(selected, key=lambda p: (p.name, p.kind)):
+        # Prefer the path the classification already resolved: a name can map to
+        # more than one primitive (``resolve-vm-id`` is both a skill and an
+        # agent), and re-resolving by name alone silently returns only the first.
+        rel = prim.rel_path if prim.rel_path else None
+        if rel is not None and not (source_root / rel).exists():
+            # Classified against a path that has since gone: fall back to a
+            # name search so a moved primitive still resolves, and let the
+            # miss below fail closed if it genuinely is not on disk.
+            rel = None
+        if rel is None:
+            rel = _source_rel_path(source_root, prim.name)
         if rel is None:
             # Classified but not on disk -- e.g. tracked in git and deleted in
             # the working tree. Silently skipping makes the staged tree quietly

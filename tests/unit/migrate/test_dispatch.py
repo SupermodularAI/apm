@@ -79,7 +79,7 @@ class TestClassifyWithRuntime:
             ceilings=CEILINGS,
             project_root="/repo",
         )
-        assert set(result.primitives) == {"alpha", "beta"}
+        assert {n for _k, n in result.primitives} == {"alpha", "beta"}
 
     def test_sends_the_rendered_prompt(self) -> None:
         """What --dry-run shows must be what dispatch actually sends."""
@@ -104,7 +104,7 @@ class TestRepairLoop:
             project_root="/repo",
             max_repairs=2,
         )
-        assert set(result.primitives) == {"alpha"}
+        assert {n for _k, n in result.primitives} == {"alpha"}
         assert len(runtime.prompts) == 2
 
     def test_repair_prompt_names_the_defects(self) -> None:

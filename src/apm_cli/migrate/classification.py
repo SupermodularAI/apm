@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -33,6 +33,13 @@ class ClassifiedPrimitive:
     name: str
     domain: str
     audience: str
+    #: Primitive kind ("skill", "agent", ...).  A name is unique only WITHIN a
+    #: kind -- ``resolve-vm-id`` is a real skill and a real agent in the same
+    #: repository -- so identity is (kind, name), never name alone.
+    kind: str = ""
+    #: Source path this classification resolved to, carried through so staging
+    #: never has to re-resolve a name that maps to more than one file.
+    rel_path: str = ""
     confidential: bool = False
     #: Literal strings the agent reported as identifying. Proposals for a human
     #: to confirm -- never applied automatically.
@@ -52,7 +59,8 @@ class Classification:
     """A validated, complete classification."""
 
     domains: dict[str, Domain]
-    primitives: dict[str, ClassifiedPrimitive]
+    #: Keyed by ``(kind, name)`` -- see :class:`ClassifiedPrimitive`.
+    primitives: dict[tuple[str, str], ClassifiedPrimitive]
 
 
 @dataclass
@@ -197,17 +205,25 @@ def parse_classification(
     for invented in sorted(returned - expected):
         defects.append(f"primitive '{invented}' does not exist in the repository")
 
-    classified: dict[str, ClassifiedPrimitive] = {}
+    # The response is keyed by NAME (the shape a human or a runtime writes), but
+    # identity is (kind, name).  One entry therefore classifies every primitive
+    # sharing that name -- otherwise the second one is silently discarded.
+    classified: dict[tuple[str, str], ClassifiedPrimitive] = {}
     for name in sorted(expected & returned):
-        parsed = _parse_one(
-            name,
-            raw_primitives[name],
-            domains=domains,
-            ceilings=ceilings,
-            defects=defects,
-        )
-        if parsed is not None:
-            classified[name] = parsed
+        for prim in sorted(
+            (p for p in primitives if p.name == name), key=lambda p: p.kind
+        ):
+            parsed = _parse_one(
+                name,
+                raw_primitives[name],
+                domains=domains,
+                ceilings=ceilings,
+                defects=defects,
+            )
+            if parsed is not None:
+                classified[(prim.kind, name)] = replace(
+                    parsed, kind=prim.kind, rel_path=prim.rel_path
+                )
 
     if defects:
         raise ClassificationError(defects)

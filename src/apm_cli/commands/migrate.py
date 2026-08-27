@@ -329,7 +329,10 @@ def init(
                             "confidential": p.confidential,
                             "identifiers": list(p.identifiers),
                         }
-                        for n, p in classification.primitives.items()
+                        # Keyed by NAME: this file is re-consumable via
+                        # --classification, whose schema is name-keyed. Two kinds
+                        # sharing a name share one entry, exactly as on the way in.
+                        for (_kind, n), p in classification.primitives.items()
                     },
                 },
                 indent=1,

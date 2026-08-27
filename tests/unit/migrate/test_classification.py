@@ -53,8 +53,8 @@ class TestAcceptsValidResponses:
         result = parse_classification(
             _response(), primitives=_primitives("alpha", "beta"), ceilings=CEILINGS
         )
-        assert set(result.primitives) == {"alpha", "beta"}
-        assert result.primitives["alpha"].audience == "public"
+        assert {n for _k, n in result.primitives} == {"alpha", "beta"}
+        assert result.primitives[("skill", "alpha")].audience == "public"
         assert result.domains["tools"].description == "Developer tooling."
 
     def test_accepts_a_json_string(self) -> None:
@@ -66,7 +66,7 @@ class TestAcceptsValidResponses:
             primitives=_primitives("alpha", "beta"),
             ceilings=CEILINGS,
         )
-        assert set(result.primitives) == {"alpha", "beta"}
+        assert {n for _k, n in result.primitives} == {"alpha", "beta"}
 
     def test_tolerates_a_fenced_code_block(self) -> None:
         """Agents wrap JSON in ``` fences more often than not."""
@@ -76,7 +76,7 @@ class TestAcceptsValidResponses:
         result = parse_classification(
             fenced, primitives=_primitives("alpha", "beta"), ceilings=CEILINGS
         )
-        assert set(result.primitives) == {"alpha", "beta"}
+        assert {n for _k, n in result.primitives} == {"alpha", "beta"}
 
     def test_confidential_primitive_is_preserved(self) -> None:
         resp = _response()
@@ -84,7 +84,7 @@ class TestAcceptsValidResponses:
         result = parse_classification(
             resp, primitives=_primitives("alpha", "beta"), ceilings=CEILINGS
         )
-        assert result.primitives["beta"].confidential is True
+        assert result.primitives[("skill", "beta")].confidential is True
 
 
 class TestRejectsMalformedResponses:
@@ -171,8 +171,8 @@ class TestFieldValidation:
         result = parse_classification(
             resp, primitives=_primitives("alpha", "beta"), ceilings=CEILINGS
         )
-        assert result.primitives["alpha"].confidential is False
-        assert result.primitives["alpha"].identifiers == ()
+        assert result.primitives[("skill", "alpha")].confidential is False
+        assert result.primitives[("skill", "alpha")].identifiers == ()
 
 
 class TestDefectSummary:
@@ -187,3 +187,36 @@ class TestDefectSummary:
             text = summarise_defects(exc.defects)
         assert "beta" in text
         assert "everyone" in text
+
+
+class TestNameCollisionAcrossKinds:
+    """A skill and an agent may share a name; both must survive.
+
+    ``resolve-vm-id`` exists as both in a real repository.  Keying the parsed
+    result by bare name collapsed the two into one, and staging then dropped
+    whichever lost -- silently, with no defect reported.
+    """
+
+    PRIMS = (
+        Primitive(name="resolve-vm-id", kind="skill", rel_path=".claude/skills/resolve-vm-id"),
+        Primitive(name="resolve-vm-id", kind="agent", rel_path=".claude/agents/resolve-vm-id.md"),
+    )
+    RAW = {
+        "domains": {"tools": {"description": "Tools."}},
+        "primitives": {"resolve-vm-id": {"domain": "tools", "audience": "public"}},
+    }
+
+    def test_both_kinds_are_classified(self):
+        c = parse_classification(
+            self.RAW, primitives=self.PRIMS, ceilings=("public", "company", "personal")
+        )
+        assert len(c.primitives) == 2, c.primitives
+
+    def test_each_kind_keeps_its_own_source_path(self):
+        c = parse_classification(
+            self.RAW, primitives=self.PRIMS, ceilings=("public", "company", "personal")
+        )
+        assert {p.rel_path for p in c.primitives.values()} == {
+            ".claude/skills/resolve-vm-id",
+            ".claude/agents/resolve-vm-id.md",
+        }
