@@ -41,6 +41,7 @@ from apm_cli.commands.lock import lock
 from apm_cli.commands.marketplace import marketplace
 from apm_cli.commands.marketplace import search as marketplace_search
 from apm_cli.commands.mcp import mcp
+from apm_cli.commands.migrate import migrate
 from apm_cli.commands.outdated import outdated as outdated_cmd
 from apm_cli.commands.pack import pack_cmd, unpack_cmd
 from apm_cli.commands.plugin import plugin as plugin_cmd
@@ -199,6 +200,8 @@ cli.add_command(pack_cmd, name="pack")
 cli.add_command(unpack_cmd, name="unpack")
 cli.add_command(publish_cmd, name="publish")
 cli.add_command(init)
+# Brownfield counterpart to `init`: adopt a repo that already holds primitives.
+cli.add_command(migrate)
 cli.add_command(install)
 cli.add_command(lock)
 cli.add_command(uninstall)
